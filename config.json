@@ -1,0 +1,13 @@
+{
+  "chats": {
+    "@Chaser_Hepls_bot": {
+      "message": null,
+      "delay": 1932
+    }
+  },
+  "active": false,
+  "scheduled": {
+    "@Chaser_Hepls_bot": []
+  },
+  "schedule_active": false
+}
