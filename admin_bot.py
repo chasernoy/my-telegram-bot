@@ -8,6 +8,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.state import StatesGroup, State
 from dotenv import load_dotenv
+import datetime
+from contextlib import suppress
+from aiogram.types import FSInputFile
 
 load_dotenv()
 TOKEN = os.getenv('BOT_TOKEN')
@@ -366,6 +369,10 @@ async def input_delay_seconds(message: Message, state: FSMContext):
 @dp.message(F.text == "❌ Удалить группу")
 @owner_only
 async def btn_remove(message: Message):
+    config = load_config()
+    if not config["chats"]:
+        await message.answer("<i>🔶 Список групп пуст.</i>", parse_mode="HTML")
+        return
     # Сначала инлайн-кнопки с группами
     await message.answer("<b> Выберите группу для удаления: </b>", parse_mode="HTML", reply_markup=get_group_keyboard("remove"))
     # Затем обычная клавиатура только с кнопкой "Назад"
@@ -380,12 +387,29 @@ async def btn_remove(message: Message):
 async def handle_remove(callback: types.CallbackQuery):
     chat = callback.data.split("remove:")[1]
     config = load_config()
+    removed_media = []
+    # Удаляем из chats
     if chat in config["chats"]:
+        # Сохраняем путь к медиа для удаления
+        media_path = config["chats"][chat].get("media")
+        if media_path and os.path.isfile(media_path):
+            removed_media.append(media_path)
         del config["chats"][chat]
-        save_config(config)
-        await callback.message.answer(f"<i> ♦️ Группа удалена: {chat} </i>", parse_mode="HTML",)
-    else:
-        await callback.message.answer("Группа не найдена.")
+    # Удаляем из scheduled
+    if "scheduled" in config and chat in config["scheduled"]:
+        for entry in config["scheduled"][chat]:
+            media_path = entry.get("media")
+            if media_path and os.path.isfile(media_path):
+                removed_media.append(media_path)
+        del config["scheduled"][chat]
+    # Удаляем медиа-файлы
+    for path in removed_media:
+        with suppress(Exception):
+            os.remove(path)
+    save_config(config)
+    await callback.message.answer(f"<i> ♦️ Группа и все связанные сообщения удалены: {chat} </i>", parse_mode="HTML",)
+    if not config["chats"]:
+        await callback.message.answer("<i>🔶 Список групп пуст.</i>", parse_mode="HTML")
     await callback.answer()
 
 # -----------------------------------
@@ -397,7 +421,7 @@ async def handle_remove(callback: types.CallbackQuery):
 async def btn_list_groups(message: Message):
     config = load_config()
     if not config["chats"]:
-        return await message.answer("<i> Список групп пуст. </i>", parse_mode="HTML",)
+        return await message.answer("<i> 🔶 Список групп пуст. </i>", parse_mode="HTML",)
     text = "\n".join([f"{chat}" for chat in config["chats"].keys()])
     await message.answer(f"<b> Список добавленных групп:\n{text} </b>", parse_mode="HTML",)
 
@@ -559,11 +583,87 @@ async def set_bot_commands():
     await bot.set_my_commands(commands)
 
 # -----------------------------------
-# Старт
+# Фоновые задачи ---
 # -----------------------------------
+schedule_broadcast_task = None
+delay_broadcast_task = None
 
+async def schedule_broadcast_loop():
+    while True:
+        config = load_config()
+        if not config.get("schedule_active", False):
+            await asyncio.sleep(5)
+            continue
+        now = datetime.datetime.now().time()
+        for group, entries in config.get("scheduled", {}).items():
+            for entry in entries:
+                try:
+                    t = datetime.datetime.strptime(entry["time"], "%H:%M:%S").time()
+                except Exception:
+                    continue
+                # Проверяем, не отправляли ли уже сегодня (по ключу last_sent_date)
+                last_sent = entry.get("last_sent_date")
+                today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+                if last_sent == today_str:
+                    continue
+                # Если время наступило (±30 сек), отправляем
+                now_seconds = now.hour*3600 + now.minute*60 + now.second
+                t_seconds = t.hour*3600 + t.minute*60 + t.second
+                if abs(now_seconds - t_seconds) <= 30:
+                    # Отправка
+                    await send_scheduled_message(group, entry)
+                    entry["last_sent_date"] = today_str
+                    save_config(config)
+        await asyncio.sleep(20)
+
+async def send_scheduled_message(group, entry):
+    # Определяем, что отправлять (текст, медиа, форматирование)
+    chat = group
+    try:
+        if entry.get("media"):
+            # Фото или документ
+            if entry["media"].endswith(".jpg") or entry["media"].endswith(".png"):
+                input_file = FSInputFile(entry["media"])
+                await bot.send_photo(chat_id=chat, photo=input_file, caption=entry.get("message", ""), caption_entities=[types.MessageEntity.model_validate(e) for e in entry.get("caption_entities", [])] if entry.get("caption_entities") else None)
+            else:
+                input_file = FSInputFile(entry["media"])
+                await bot.send_document(chat_id=chat, document=input_file, caption=entry.get("message", ""), caption_entities=[types.MessageEntity.model_validate(e) for e in entry.get("caption_entities", [])] if entry.get("caption_entities") else None)
+        elif entry.get("message"):
+            await bot.send_message(chat_id=chat, text=entry["message"], entities=[types.MessageEntity.model_validate(e) for e in entry.get("entities", [])] if entry.get("entities") else None, parse_mode=None)
+    except Exception as e:
+        print(f"[ERROR] Не удалось отправить сообщение по расписанию в {chat}: {e}")
+
+async def delay_broadcast_loop():
+    while True:
+        config = load_config()
+        if not config.get("active", False):
+            await asyncio.sleep(5)
+            continue
+        for group, data in config.get("chats", {}).items():
+            try:
+                if data.get("media"):
+                    if data["media"].endswith(".jpg") or data["media"].endswith(".png"):
+                        input_file = FSInputFile(data["media"])
+                        await bot.send_photo(chat_id=group, photo=input_file, caption=data.get("message", ""), caption_entities=[types.MessageEntity.model_validate(e) for e in data.get("caption_entities", [])] if data.get("caption_entities") else None)
+                    else:
+                        input_file = FSInputFile(data["media"])
+                        await bot.send_document(chat_id=group, document=input_file, caption=data.get("message", ""), caption_entities=[types.MessageEntity.model_validate(e) for e in data.get("caption_entities", [])] if data.get("caption_entities") else None)
+                elif data.get("message"):
+                    await bot.send_message(chat_id=group, text=data["message"], entities=[types.MessageEntity.model_validate(e) for e in data.get("entities", [])] if data.get("entities") else None, parse_mode=None)
+            except Exception as e:
+                print(f"[ERROR] Не удалось отправить сообщение по задержке в {group}: {e}")
+        # Задержка для всех групп одинаковая (берём минимальную)
+        delays = [data.get("delay", 60) for data in config.get("chats", {}).values()]
+        delay = min(delays) if delays else 60
+        await asyncio.sleep(delay)
+
+# --- Запуск фоновых задач при старте ---
 async def main():
+    global schedule_broadcast_task, delay_broadcast_task
     await set_bot_commands()
+    # Запуск фоновых задач
+    schedule_broadcast_task = asyncio.create_task(schedule_broadcast_loop())
+    delay_broadcast_task = asyncio.create_task(delay_broadcast_loop())
     await dp.start_polling(bot)
 
 # --- Главное меню ---
@@ -651,8 +751,12 @@ async def spam_back_to_main_menu(message: Message, state: FSMContext):
 @owner_only
 async def btn_schedule(message: Message, state: FSMContext):
     config = load_config()
-    if not config["chats"]:
-        return await message.answer("Список групп пуст.")
+    if not config["chats"] and (not config.get("scheduled") or not config["scheduled"]):
+        # Останавливаем рассылку по расписанию
+        config["schedule_active"] = False
+        save_config(config)
+        await message.answer("<i>🔶 Список групп пуст. Рассылка по расписанию остановлена.</i>", parse_mode="HTML")
+        return
     await state.update_data(last_menu='schedule')
     await message.answer(
         "Выберите группу для настройки расписания:",
@@ -737,6 +841,13 @@ async def schedule_input_message(message: Message, state: FSMContext):
 @dp.message(F.text == "⏳ По задержке")
 @owner_only
 async def btn_spam_menu(message: Message, state: FSMContext):
+    config = load_config()
+    if not config["chats"]:
+        # Останавливаем рассылку по задержке
+        config["active"] = False
+        save_config(config)
+        await message.answer("<i>🔶 Список групп пуст. Рассылка по задержке остановлена.</i>", parse_mode="HTML")
+        return
     await state.clear()
     await message.answer(
         "<i>Спам происходит по всем группам сразу.\n\nДля возврата нажмите на кнопку </i><b>Назад</b>",
