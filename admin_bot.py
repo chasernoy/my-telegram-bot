@@ -550,6 +550,9 @@ async def save_new_time(message: Message, state: FSMContext):
         if not re.match(time_pattern, message.text):
             return await message.answer("<b> Введите корректное время в формате ЧЧ:ММ:СС (например, 15:35:00) или 0, чтобы оставить прежнее </b>" , parse_mode="HTML")
         entry["time"] = message.text.strip()
+    # Сброс last_sent_date при изменении времени
+    if "last_sent_date" in entry:
+        del entry["last_sent_date"]
     save_config(config)
     await message.answer("<i>Отправьте новое сообщение или 0, чтобы оставить прежнее сообщение:</i>",parse_mode='html')
     await state.set_state(EditScheduleStates.waiting_for_new_message)
@@ -601,6 +604,9 @@ async def save_new_message(message: Message, state: FSMContext):
     else:
         await message.answer("<i> ♦️ Не удалось распознать сообщение. Отправьте текст или медиа, либо 0 чтобы оставить прежнее.</i>", parse_mode="HTML")
         return
+    # Сброс last_sent_date при изменении сообщения
+    if "last_sent_date" in entry:
+        del entry["last_sent_date"]
     save_config(config)
     await message.answer("<i> 🔸Сообщение по расписанию обновлено! </i>", parse_mode="HTML")
     await state.clear()
@@ -654,15 +660,18 @@ async def schedule_broadcast_loop():
                 last_sent = entry.get("last_sent_date")
                 today_str = datetime.datetime.now().strftime("%Y-%m-%d")
                 if last_sent == today_str:
-                    print(f"[LOG] Сообщение уже отправлено сегодня для {group} в {entry['time']}")
+                    print(f"[INFO] Пропуск: уже отправлено сегодня для {group} в {entry['time']} (last_sent_date={last_sent})")
                     continue
                 now_seconds = now.hour*3600 + now.minute*60 + now.second
                 t_seconds = t.hour*3600 + t.minute*60 + t.second
                 if 0 <= now_seconds - t_seconds <= 300:
                     print(f"[LOG] Время отправки для {group}: {entry['time']}, отправляем... (опоздание: {now_seconds - t_seconds} сек)")
-                    await send_scheduled_message(group, entry)
-                    entry["last_sent_date"] = today_str
-                    save_config(config)
+                    try:
+                        await send_scheduled_message(group, entry)
+                        entry["last_sent_date"] = today_str
+                        save_config(config)
+                    except Exception as e:
+                        print(f"[ERROR] Не удалось отправить сообщение по расписанию в {group}: {e}")
         await asyncio.sleep(5)
 
 async def send_scheduled_message(group, entry):
