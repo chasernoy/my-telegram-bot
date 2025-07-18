@@ -634,8 +634,8 @@ async def schedule_broadcast_loop():
                     continue
                 now_seconds = now.hour*3600 + now.minute*60 + now.second
                 t_seconds = t.hour*3600 + t.minute*60 + t.second
-                if abs(now_seconds - t_seconds) <= 30:
-                    print(f"[LOG] Время отправки для {group}: {entry['time']}, отправляем...")
+                if 0 <= now_seconds - t_seconds <= 300:
+                    print(f"[LOG] Время отправки для {group}: {entry['time']}, отправляем... (опоздание: {now_seconds - t_seconds} сек)")
                     await send_scheduled_message(group, entry)
                     entry["last_sent_date"] = today_str
                     save_config(config)
