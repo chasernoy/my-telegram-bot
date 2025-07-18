@@ -23,7 +23,6 @@ from functools import wraps
 def owner_only(func):
     @wraps(func)
     async def wrapper(*args, **kwargs):
-        # Найти объект message среди args или kwargs
         message = None
         for arg in args:
             if isinstance(arg, Message):
@@ -32,11 +31,12 @@ def owner_only(func):
         if not message:
             message = kwargs.get('message')
         if not message:
-            # Если message не найден — пропускаем (или можно raise)
             return await func(*args, **kwargs)
         if message.from_user.id != OWNER_ID:
+            print(f"[SECURITY] Попытка доступа не-OWNER: {message.from_user.id}, text: {getattr(message, 'text', None)}")
             await message.answer("<b>Доступ запрещён.</b>", parse_mode="HTML")
             return
+        print(f"[OWNER] Доступ разрешён: {message.from_user.id}, text: {getattr(message, 'text', None)}")
         return await func(*args, **kwargs)
     return wrapper
 bot = Bot(token=TOKEN)
@@ -72,12 +72,22 @@ class DeleteScheduleStates(StatesGroup):
 # -----------------------------------
 
 def load_config():
-    with open(CONFIG_PATH, 'r') as f:
-        return json.load(f)
+    try:
+        with open(CONFIG_PATH, 'r') as f:
+            data = json.load(f)
+            print(f"[LOG] Загружен config: {data}")
+            return data
+    except Exception as e:
+        print(f"[ERROR] Не удалось загрузить config: {e}")
+        return {"chats": {}, "active": False, "scheduled": {}, "schedule_active": False}
 
 def save_config(data):
-    with open(CONFIG_PATH, 'w') as f:
-        json.dump(data, f, indent=2)
+    try:
+        with open(CONFIG_PATH, 'w') as f:
+            json.dump(data, f, indent=2)
+        print(f"[LOG] Сохранён config: {data}")
+    except Exception as e:
+        print(f"[ERROR] Не удалось сохранить config: {e}")
 
 # -----------------------------------
 # Кнопки для групп
@@ -167,6 +177,7 @@ async def btn_setmsg(message: Message):
 
 @dp.callback_query(F.data.startswith("msg:"))
 async def group_msg_selected(callback: types.CallbackQuery, state: FSMContext):
+    print(f"[CALLBACK] msg: from_user={callback.from_user.id}, data={callback.data}, state={await state.get_state()}")
     chat = callback.data.split("msg:")[1]
     await state.update_data(selected_group=chat)
     await callback.message.answer(f"<b> Отправьте сообщение для {chat}. Это может быть текст, медиа, текст + медиа.</b>",parse_mode="HTML",)
@@ -176,6 +187,7 @@ async def group_msg_selected(callback: types.CallbackQuery, state: FSMContext):
 @dp.message(BotStates.waiting_for_msg)
 @owner_only
 async def handle_msg_input(message: Message, state: FSMContext):
+    print(f"[FSM] Состояние: {await state.get_state()}, message: {message.text}")
     data = await state.get_data()
     chat = data["selected_group"]
     config = load_config()
@@ -252,6 +264,7 @@ back_button = ReplyKeyboardMarkup(
 )
 @dp.callback_query(F.data.startswith("delay:"))
 async def group_delay_selected(callback: types.CallbackQuery, state: FSMContext):
+    print(f"[CALLBACK] delay: from_user={callback.from_user.id}, data={callback.data}, state={await state.get_state()}")
     chat = callback.data.split("delay:")[1]
     await state.update_data(selected_group=chat)
     msg = await callback.message.answer("Текущая задержка: <b>00:00:00</b>", parse_mode="HTML")
@@ -264,6 +277,7 @@ async def group_delay_selected(callback: types.CallbackQuery, state: FSMContext)
 @dp.message(BotStates.waiting_for_delay_hours)
 @owner_only
 async def input_delay_hours(message: Message, state: FSMContext):
+    print(f"[FSM] Состояние: {await state.get_state()}, message: {message.text}")
     if message.text == "🔙 Назад":
         return  # обработка выше
     try:
@@ -295,6 +309,7 @@ async def input_delay_hours(message: Message, state: FSMContext):
 @dp.message(BotStates.waiting_for_delay_minutes)
 @owner_only
 async def input_delay_minutes(message: Message, state: FSMContext):
+    print(f"[FSM] Состояние: {await state.get_state()}, message: {message.text}")
     if message.text == "🔙 Назад":
         return  # обработка выше
     try:
@@ -327,6 +342,7 @@ async def input_delay_minutes(message: Message, state: FSMContext):
 @dp.message(BotStates.waiting_for_delay_seconds)
 @owner_only
 async def input_delay_seconds(message: Message, state: FSMContext):
+    print(f"[FSM] Состояние: {await state.get_state()}, message: {message.text}")
     if message.text == "🔙 Назад":
         return  # обработка выше
     try:
@@ -385,6 +401,7 @@ async def btn_remove(message: Message):
 
 @dp.callback_query(F.data.startswith("remove:"))
 async def handle_remove(callback: types.CallbackQuery):
+    print(f"[CALLBACK] remove: from_user={callback.from_user.id}, data={callback.data}")
     chat = callback.data.split("remove:")[1]
     config = load_config()
     removed_media = []
@@ -479,6 +496,7 @@ def get_edit_entry_inline_keyboard(entries):
 
 @dp.callback_query(F.data.startswith("edit_schedule_group:"))
 async def edit_schedule_group_selected(callback: types.CallbackQuery, state: FSMContext):
+    print(f"[CALLBACK] edit_schedule_group: from_user={callback.from_user.id}, data={callback.data}, state={await state.get_state()}")
     group = callback.data.split(":", 1)[1]
     await state.update_data(selected_group=group)
     config = load_config()
@@ -496,6 +514,7 @@ async def edit_schedule_group_selected(callback: types.CallbackQuery, state: FSM
 
 @dp.callback_query(F.data.startswith("edit_schedule_entry:"))
 async def edit_schedule_entry_selected(callback: types.CallbackQuery, state: FSMContext):
+    print(f"[CALLBACK] edit_schedule_entry: from_user={callback.from_user.id}, data={callback.data}, state={await state.get_state()}")
     entry_idx = int(callback.data.split(":", 1)[1])
     data = await state.get_data()
     group = data["selected_group"]
@@ -507,6 +526,7 @@ async def edit_schedule_entry_selected(callback: types.CallbackQuery, state: FSM
 
 @dp.message(EditScheduleStates.waiting_for_new_time)
 async def save_new_time(message: Message, state: FSMContext):
+    print(f"[FSM] Состояние: {await state.get_state()}, message: {message.text}")
     import re
     data = await state.get_data()
     group = data["selected_group"]
@@ -524,6 +544,7 @@ async def save_new_time(message: Message, state: FSMContext):
 
 @dp.message(EditScheduleStates.waiting_for_new_message)
 async def save_new_message(message: Message, state: FSMContext):
+    print(f"[FSM] Состояние: {await state.get_state()}, message: {message.text}")
     data = await state.get_data()
     group = data["selected_group"]
     idx = data["edit_entry_idx"]
@@ -562,6 +583,7 @@ async def save_new_message(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "edit_entry_back")
 async def edit_entry_back(callback: types.CallbackQuery, state: FSMContext):
+    print(f"[CALLBACK] edit_entry_back: from_user={callback.from_user.id}, data={callback.data}, state={await state.get_state()}")
     data = await state.get_data()
     group = data["selected_group"]
     config = load_config()
@@ -589,39 +611,42 @@ schedule_broadcast_task = None
 delay_broadcast_task = None
 
 async def schedule_broadcast_loop():
+    print("[DEBUG] schedule_broadcast_loop запущен")
     while True:
         config = load_config()
         if not config.get("schedule_active", False):
+            print("[LOG] schedule_broadcast_loop: schedule_active = False, sleep 5s")
             await asyncio.sleep(5)
             continue
         now = datetime.datetime.now().time()
         for group, entries in config.get("scheduled", {}).items():
+            print(f"[LOG] Проверка расписания для группы {group}, entries: {entries}")
             for entry in entries:
                 try:
                     t = datetime.datetime.strptime(entry["time"], "%H:%M:%S").time()
-                except Exception:
+                except Exception as e:
+                    print(f"[ERROR] Некорректное время в entry: {entry}, ошибка: {e}")
                     continue
-                # Проверяем, не отправляли ли уже сегодня (по ключу last_sent_date)
                 last_sent = entry.get("last_sent_date")
                 today_str = datetime.datetime.now().strftime("%Y-%m-%d")
                 if last_sent == today_str:
+                    print(f"[LOG] Сообщение уже отправлено сегодня для {group} в {entry['time']}")
                     continue
-                # Если время наступило (±30 сек), отправляем
                 now_seconds = now.hour*3600 + now.minute*60 + now.second
                 t_seconds = t.hour*3600 + t.minute*60 + t.second
                 if abs(now_seconds - t_seconds) <= 30:
-                    # Отправка
+                    print(f"[LOG] Время отправки для {group}: {entry['time']}, отправляем...")
                     await send_scheduled_message(group, entry)
                     entry["last_sent_date"] = today_str
                     save_config(config)
         await asyncio.sleep(20)
 
 async def send_scheduled_message(group, entry):
-    # Определяем, что отправлять (текст, медиа, форматирование)
+    print(f"[DEBUG] send_scheduled_message для {group}, entry: {entry}")
     chat = group
     try:
         if entry.get("media"):
-            # Фото или документ
+            print(f"[LOG] Отправка медиа в {chat}: {entry['media']}")
             if entry["media"].endswith(".jpg") or entry["media"].endswith(".png"):
                 input_file = FSInputFile(entry["media"])
                 await bot.send_photo(chat_id=chat, photo=input_file, caption=entry.get("message", ""), caption_entities=[types.MessageEntity.model_validate(e) for e in entry.get("caption_entities", [])] if entry.get("caption_entities") else None)
@@ -629,19 +654,26 @@ async def send_scheduled_message(group, entry):
                 input_file = FSInputFile(entry["media"])
                 await bot.send_document(chat_id=chat, document=input_file, caption=entry.get("message", ""), caption_entities=[types.MessageEntity.model_validate(e) for e in entry.get("caption_entities", [])] if entry.get("caption_entities") else None)
         elif entry.get("message"):
+            print(f"[LOG] Отправка текста в {chat}: {entry['message']}")
             await bot.send_message(chat_id=chat, text=entry["message"], entities=[types.MessageEntity.model_validate(e) for e in entry.get("entities", [])] if entry.get("entities") else None, parse_mode=None)
+        else:
+            print(f"[WARN] Нет данных для отправки в {chat}")
     except Exception as e:
         print(f"[ERROR] Не удалось отправить сообщение по расписанию в {chat}: {e}")
 
 async def delay_broadcast_loop():
+    print("[DEBUG] delay_broadcast_loop запущен")
     while True:
         config = load_config()
         if not config.get("active", False):
+            print("[LOG] delay_broadcast_loop: active = False, sleep 5s")
             await asyncio.sleep(5)
             continue
         for group, data in config.get("chats", {}).items():
+            print(f"[LOG] Попытка отправки в {group}, data: {data}")
             try:
                 if data.get("media"):
+                    print(f"[LOG] Отправка медиа в {group}: {data['media']}")
                     if data["media"].endswith(".jpg") or data["media"].endswith(".png"):
                         input_file = FSInputFile(data["media"])
                         await bot.send_photo(chat_id=group, photo=input_file, caption=data.get("message", ""), caption_entities=[types.MessageEntity.model_validate(e) for e in data.get("caption_entities", [])] if data.get("caption_entities") else None)
@@ -649,22 +681,30 @@ async def delay_broadcast_loop():
                         input_file = FSInputFile(data["media"])
                         await bot.send_document(chat_id=group, document=input_file, caption=data.get("message", ""), caption_entities=[types.MessageEntity.model_validate(e) for e in data.get("caption_entities", [])] if data.get("caption_entities") else None)
                 elif data.get("message"):
+                    print(f"[LOG] Отправка текста в {group}: {data['message']}")
                     await bot.send_message(chat_id=group, text=data["message"], entities=[types.MessageEntity.model_validate(e) for e in data.get("entities", [])] if data.get("entities") else None, parse_mode=None)
+                else:
+                    print(f"[WARN] Нет данных для отправки в {group}")
             except Exception as e:
                 print(f"[ERROR] Не удалось отправить сообщение по задержке в {group}: {e}")
-        # Задержка для всех групп одинаковая (берём минимальную)
         delays = [data.get("delay", 60) for data in config.get("chats", {}).values()]
         delay = min(delays) if delays else 60
+        print(f"[LOG] Ждём {delay} секунд до следующей рассылки")
         await asyncio.sleep(delay)
 
 # --- Запуск фоновых задач при старте ---
 async def main():
     global schedule_broadcast_task, delay_broadcast_task
+    print("[LOG] main() стартует")
     await set_bot_commands()
+    print("[LOG] set_bot_commands выполнен")
     # Запуск фоновых задач
     schedule_broadcast_task = asyncio.create_task(schedule_broadcast_loop())
+    print("[LOG] schedule_broadcast_loop запущен")
     delay_broadcast_task = asyncio.create_task(delay_broadcast_loop())
+    print("[LOG] delay_broadcast_loop запущен")
     await dp.start_polling(bot)
+    print("[LOG] dp.start_polling завершён")
 
 # --- Главное меню ---
 main_menu = ReplyKeyboardMarkup(
@@ -701,6 +741,7 @@ spam_menu = ReplyKeyboardMarkup(
 @dp.message(CommandStart())
 @owner_only
 async def cmd_start(message: Message, state: FSMContext):
+    print(f"[FSM] Состояние: {await state.get_state()}, message: {message.text}")
     await state.clear()
     await message.answer(
         "<b>🔽 Выберите действие:</b>",
@@ -768,6 +809,7 @@ async def btn_schedule(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("schedule:"))
 async def schedule_group_selected(callback: types.CallbackQuery, state: FSMContext):
+    print(f"[CALLBACK] schedule: from_user={callback.from_user.id}, data={callback.data}, state={await state.get_state()}")
     chat = callback.data.split("schedule:")[1]
     await state.update_data(selected_group=chat)
     await callback.message.answer("<b> Введите время отправки сообщения в формате ЧЧ:ММ:СС (например, 15:30:25): </b>" , parse_mode="HTML")
@@ -777,6 +819,7 @@ async def schedule_group_selected(callback: types.CallbackQuery, state: FSMConte
 @dp.message(ScheduleStates.waiting_for_time)
 @owner_only
 async def schedule_input_time(message: Message, state: FSMContext):
+    print(f"[FSM] Состояние: {await state.get_state()}, message: {message.text}")
     import re
     time_pattern = r"^([01]?\d|2[0-3]):[0-5]\d:[0-5]\d$"
     if not re.match(time_pattern, message.text):
@@ -788,6 +831,7 @@ async def schedule_input_time(message: Message, state: FSMContext):
 @dp.message(ScheduleStates.waiting_for_scheduled_message)
 @owner_only
 async def schedule_input_message(message: Message, state: FSMContext):
+    print(f"[FSM] Состояние: {await state.get_state()}, message: {message.text}")
     if not (message.text or message.photo or message.document):
         await message.answer("<i> ♦️ Не удалось распознать сообщение. Отправьте текст или медиа. </i> ", parse_mode="HTML",)
         return
@@ -880,6 +924,7 @@ async def btn_stop_spam(message: Message):
 @dp.message(F.text == "🗑️ Удалить запись")
 @owner_only
 async def delete_schedule_entry_start(message: Message, state: FSMContext):
+    print(f"[FSM] Состояние: {await state.get_state()}, message: {message.text}")
     config = load_config()
     groups = list(config.get("scheduled", {}).keys())
     if not groups:
@@ -893,6 +938,7 @@ async def delete_schedule_entry_start(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("delete_schedule_group:"), DeleteScheduleStates.waiting_for_group)
 async def delete_schedule_group_selected(callback: types.CallbackQuery, state: FSMContext):
+    print(f"[CALLBACK] delete_schedule_group: from_user={callback.from_user.id}, data={callback.data}, state={await state.get_state()}")
     group = callback.data.split(":", 1)[1]
     config = load_config()
     entries = config.get("scheduled", {}).get(group, [])
@@ -913,6 +959,7 @@ async def delete_schedule_group_selected(callback: types.CallbackQuery, state: F
 
 @dp.callback_query(F.data.startswith("delete_schedule_entry:"), DeleteScheduleStates.waiting_for_entry)
 async def delete_schedule_entry_selected(callback: types.CallbackQuery, state: FSMContext):
+    print(f"[CALLBACK] delete_schedule_entry: from_user={callback.from_user.id}, data={callback.data}, state={await state.get_state()}")
     idx = int(callback.data.split(":", 1)[1])
     data = await state.get_data()
     group = data["selected_group"]
@@ -946,6 +993,7 @@ async def delete_schedule_entry_selected(callback: types.CallbackQuery, state: F
 
 @dp.callback_query(F.data == "delete_schedule_back", DeleteScheduleStates.waiting_for_entry)
 async def delete_schedule_back_to_group(callback: types.CallbackQuery, state: FSMContext):
+    print(f"[CALLBACK] delete_schedule_back: from_user={callback.from_user.id}, data={callback.data}, state={await state.get_state()}")
     config = load_config()
     groups = list(config.get("scheduled", {}).keys())
     if not groups:
