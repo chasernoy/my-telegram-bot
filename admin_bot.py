@@ -73,7 +73,7 @@ class DeleteScheduleStates(StatesGroup):
 
 def load_config():
     try:
-    with open(CONFIG_PATH, 'r') as f:
+        with open(CONFIG_PATH, 'r') as f:
             data = json.load(f)
             print(f"[LOG] Загружен config: {data}")
             return data
@@ -83,9 +83,9 @@ def load_config():
 
 def save_config(data):
     try:
-    with open(CONFIG_PATH, 'w') as f:
-        json.dump(data, f, indent=2)
-        print(f"[LOG] Сохранён config: {data}")
+        with open(CONFIG_PATH, 'w') as f:
+            json.dump(data, f, indent=2)
+            print(f"[LOG] Сохранён config: {data}")
     except Exception as e:
         print(f"[ERROR] Не удалось сохранить config: {e}")
 
