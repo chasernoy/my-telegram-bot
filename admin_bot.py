@@ -73,7 +73,7 @@ class DeleteScheduleStates(StatesGroup):
 
 def load_config():
     try:
-        with open(CONFIG_PATH, 'r') as f:
+    with open(CONFIG_PATH, 'r') as f:
             data = json.load(f)
             print(f"[LOG] Загружен config: {data}")
             return data
@@ -83,8 +83,8 @@ def load_config():
 
 def save_config(data):
     try:
-        with open(CONFIG_PATH, 'w') as f:
-            json.dump(data, f, indent=2)
+    with open(CONFIG_PATH, 'w') as f:
+        json.dump(data, f, indent=2)
         print(f"[LOG] Сохранён config: {data}")
     except Exception as e:
         print(f"[ERROR] Не удалось сохранить config: {e}")
@@ -423,7 +423,7 @@ async def handle_remove(callback: types.CallbackQuery):
     for path in removed_media:
         with suppress(Exception):
             os.remove(path)
-    save_config(config)
+        save_config(config)
     await callback.message.answer(f"<i> ♦️ Группа и все связанные сообщения удалены: {chat} </i>", parse_mode="HTML",)
     if not config["chats"]:
         await callback.message.answer("<i>🔶 Список групп пуст.</i>", parse_mode="HTML")
@@ -871,6 +871,7 @@ async def schedule_input_message(message: Message, state: FSMContext):
         entry["caption_entities"] = [e.model_dump() for e in message.caption_entities] if message.caption_entities else None
     elif message.text:
         entry["message"] = message.text
+        entry["entities"] = [e.model_dump() for e in message.entities] if message.entities else None
     # Сохраняем в config
     if "scheduled" not in config:
         config["scheduled"] = {}
