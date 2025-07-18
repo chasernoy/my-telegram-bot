@@ -460,7 +460,7 @@ async def btn_launch(message: Message):
 
 @dp.message(F.text == "🔴 Стоп ")
 @owner_only
-async def btn_stop(message: Message):
+async def btn_stop(message: Message, state: FSMContext):
     config = load_config()
     config["active"] = False
     save_config(config)
@@ -526,6 +526,18 @@ async def edit_schedule_entry_selected(callback: types.CallbackQuery, state: FSM
 
 @dp.message(EditScheduleStates.waiting_for_new_time)
 async def save_new_time(message: Message, state: FSMContext):
+    if message.text == "🔙 Назад":
+        # Вернуться к списку сообщений для редактирования
+        data = await state.get_data()
+        group = data["selected_group"]
+        config = load_config()
+        entries = config.get("scheduled", {}).get(group, [])
+        await message.answer(
+            "Выберите сообщение для редактирования:",
+            reply_markup=get_edit_entry_inline_keyboard(entries)
+        )
+        await state.set_state(BotStates.selected_group)
+        return
     print(f"[FSM] Состояние: {await state.get_state()}, message: {message.text}")
     import re
     data = await state.get_data()
@@ -544,6 +556,18 @@ async def save_new_time(message: Message, state: FSMContext):
 
 @dp.message(EditScheduleStates.waiting_for_new_message)
 async def save_new_message(message: Message, state: FSMContext):
+    if message.text == "🔙 Назад":
+        # Вернуться к списку сообщений для редактирования
+        data = await state.get_data()
+        group = data["selected_group"]
+        config = load_config()
+        entries = config.get("scheduled", {}).get(group, [])
+        await message.answer(
+            "Выберите сообщение для редактирования:",
+            reply_markup=get_edit_entry_inline_keyboard(entries)
+        )
+        await state.set_state(BotStates.selected_group)
+        return
     print(f"[FSM] Состояние: {await state.get_state()}, message: {message.text}")
     data = await state.get_data()
     group = data["selected_group"]
@@ -639,7 +663,7 @@ async def schedule_broadcast_loop():
                     await send_scheduled_message(group, entry)
                     entry["last_sent_date"] = today_str
                     save_config(config)
-        await asyncio.sleep(20)
+        await asyncio.sleep(5)
 
 async def send_scheduled_message(group, entry):
     print(f"[DEBUG] send_scheduled_message для {group}, entry: {entry}")
