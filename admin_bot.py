@@ -39,6 +39,25 @@ def owner_only(func):
         print(f"[OWNER] Доступ разрешён: {message.from_user.id}, text: {getattr(message, 'text', None)}")
         return await func(*args, **kwargs)
     return wrapper
+
+def private_chat_only(func):
+    """Декоратор для ограничения команд только личным чатом"""
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        message = None
+        for arg in args:
+            if isinstance(arg, Message):
+                message = arg
+                break
+        if not message:
+            message = kwargs.get('message')
+        if not message:
+            return await func(*args, **kwargs)
+        if message.chat.type != "private":
+            print(f"[SILENT] Игнорируем команду в группе: {message.chat.type}, text: {getattr(message, 'text', None)}")
+            return  # Просто игнорируем, не отвечаем
+        return await func(*args, **kwargs)
+    return wrapper
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
@@ -129,6 +148,7 @@ def get_edit_group_inline_keyboard(groups):
 # -----------------------------------
 
 @dp.message(F.text == "➕ Добавить группу")
+@private_chat_only
 @owner_only
 async def btn_add(message: Message):
     # Создаем клавиатуру с только кнопкой назад
@@ -140,9 +160,10 @@ async def btn_add(message: Message):
     )
     await message.answer("<i> Введите ссылку на группу, которую хотите добавить: </i> ", parse_mode="HTML", reply_markup=back_button)
 
-@dp.message(lambda m: m.text and (m.text.startswith("https://t.me/") or m.text.startswith("@")))
+@dp.message(lambda m: m.text and (m.text.startswith("https://t.me/") or m.text.startswith("@")) and m.chat.type == "private")
 @owner_only
 async def handle_group_add(message: Message):
+    """Добавление группы в личном чате: просто отправьте @groupname или https://t.me/groupname"""
     config = load_config()
     link = message.text.strip()
     # Приводим к формату @groupname
@@ -163,6 +184,7 @@ async def handle_group_add(message: Message):
 # Сообщение
 # -----------------------------------
 @dp.message(F.text == "💬 Изменить сообщение")
+@private_chat_only
 @owner_only
 async def btn_setmsg(message: Message):
     # Сначала инлайн-кнопки с группами
@@ -248,6 +270,7 @@ time_unit_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 @dp.message(F.text == "⏰ Изменить задержку")
+@private_chat_only
 @owner_only
 async def btn_delay(message: Message, state: FSMContext):
     await message.answer("<b> Выберите группу для изменения задержки:</b>", parse_mode="HTML", reply_markup=get_group_keyboard("delay"))
@@ -383,6 +406,7 @@ async def input_delay_seconds(message: Message, state: FSMContext):
 # -----------------------------------
 
 @dp.message(F.text == "❌ Удалить группу")
+@private_chat_only
 @owner_only
 async def btn_remove(message: Message):
     config = load_config()
@@ -404,26 +428,45 @@ async def handle_remove(callback: types.CallbackQuery):
     print(f"[CALLBACK] remove: from_user={callback.from_user.id}, data={callback.data}")
     chat = callback.data.split("remove:")[1]
     config = load_config()
+    print(f"[DELETE] Удаляем группу: {chat}")
+    print(f"[DELETE] Конфиг до удаления: {config}")
+    
     removed_media = []
     # Удаляем из chats
     if chat in config["chats"]:
+        print(f"[DELETE] Удаляем из chats: {chat}")
         # Сохраняем путь к медиа для удаления
         media_path = config["chats"][chat].get("media")
         if media_path and os.path.isfile(media_path):
             removed_media.append(media_path)
+            print(f"[DELETE] Добавлен медиа-файл для удаления: {media_path}")
         del config["chats"][chat]
+    else:
+        print(f"[DELETE] Группа {chat} не найдена в chats")
+    
     # Удаляем из scheduled
     if "scheduled" in config and chat in config["scheduled"]:
+        print(f"[DELETE] Удаляем из scheduled: {chat}")
         for entry in config["scheduled"][chat]:
             media_path = entry.get("media")
             if media_path and os.path.isfile(media_path):
                 removed_media.append(media_path)
+                print(f"[DELETE] Добавлен медиа-файл из scheduled для удаления: {media_path}")
         del config["scheduled"][chat]
+    else:
+        print(f"[DELETE] Группа {chat} не найдена в scheduled")
+    
     # Удаляем медиа-файлы
     for path in removed_media:
         with suppress(Exception):
             os.remove(path)
-        save_config(config)
+            print(f"[DELETE] Удален медиа-файл: {path}")
+    
+    # Сохраняем конфиг только один раз после всех операций удаления
+    print(f"[DELETE] Конфиг после удаления: {config}")
+    save_config(config)
+    print(f"[DELETE] Конфиг сохранен")
+    
     await callback.message.answer(f"<i> ♦️ Группа и все связанные сообщения удалены: {chat} </i>", parse_mode="HTML",)
     if not config["chats"]:
         await callback.message.answer("<i>🔶 Список групп пуст.</i>", parse_mode="HTML")
@@ -434,12 +477,16 @@ async def handle_remove(callback: types.CallbackQuery):
 # -----------------------------------
 
 @dp.message(F.text == "📒 Список групп")
+@private_chat_only
 @owner_only
 async def btn_list_groups(message: Message):
     config = load_config()
+    print(f"[LIST] Загружен конфиг для списка групп: {config}")
+    print(f"[LIST] Группы в chats: {list(config.get('chats', {}).keys())}")
     if not config["chats"]:
         return await message.answer("<i> 🔶 Список групп пуст. </i>", parse_mode="HTML",)
     text = "\n".join([f"{chat}" for chat in config["chats"].keys()])
+    print(f"[LIST] Отправляем список: {text}")
     await message.answer(f"<b> Список добавленных групп:\n{text} </b>", parse_mode="HTML",)
 
 # --- Глобальный флаг для фоновой задачи ---
@@ -451,6 +498,7 @@ def set_schedule_active(active: bool):
     save_config(config)
 
 @dp.message(F.text == "🟢 Старт рассылки")
+@private_chat_only
 @owner_only
 async def btn_launch(message: Message):
     config = load_config()
@@ -459,6 +507,7 @@ async def btn_launch(message: Message):
     await message.answer("<b>✅ Рассылка включена.</b>", parse_mode="HTML")
 
 @dp.message(F.text == "🔴 Стоп ")
+@private_chat_only
 @owner_only
 async def btn_stop(message: Message, state: FSMContext):
     config = load_config()
@@ -467,6 +516,7 @@ async def btn_stop(message: Message, state: FSMContext):
     await message.answer("<b>⛔️ Рассылка остановлена. </b>" , parse_mode="HTML")
 
 @dp.message(F.text == "✏️ Редактировать сообщения")
+@private_chat_only
 @owner_only
 async def schedule_edit_entry(message: Message, state: FSMContext):
     config = load_config()
@@ -505,9 +555,13 @@ async def edit_schedule_group_selected(callback: types.CallbackQuery, state: FSM
         await callback.message.answer("<i>🔸 Нет сообщений по расписанию для этой группы. </i>",parse_mode='html')
         await callback.answer()
         return
+    
+    # Сортируем записи по времени от меньшего к большему
+    entries_sorted = sorted(entries, key=lambda x: x.get("time", "00:00:00"))
+    
     await callback.message.answer(
         "<b> Выберите сообщение для редактирования: </b>",parse_mode='html',
-        reply_markup=get_edit_entry_inline_keyboard(entries)
+        reply_markup=get_edit_entry_inline_keyboard(entries_sorted)
     )
     await state.set_state(BotStates.selected_group)  # временно, далее будет отдельное состояние
     await callback.answer()
@@ -532,9 +586,11 @@ async def save_new_time(message: Message, state: FSMContext):
         group = data["selected_group"]
         config = load_config()
         entries = config.get("scheduled", {}).get(group, [])
+        # Сортируем записи по времени от меньшего к большему
+        entries_sorted = sorted(entries, key=lambda x: x.get("time", "00:00:00"))
         await message.answer(
             "Выберите сообщение для редактирования:",
-            reply_markup=get_edit_entry_inline_keyboard(entries)
+            reply_markup=get_edit_entry_inline_keyboard(entries_sorted)
         )
         await state.set_state(BotStates.selected_group)
         return
@@ -565,9 +621,11 @@ async def save_new_message(message: Message, state: FSMContext):
         group = data["selected_group"]
         config = load_config()
         entries = config.get("scheduled", {}).get(group, [])
+        # Сортируем записи по времени от меньшего к большему
+        entries_sorted = sorted(entries, key=lambda x: x.get("time", "00:00:00"))
         await message.answer(
             "Выберите сообщение для редактирования:",
-            reply_markup=get_edit_entry_inline_keyboard(entries)
+            reply_markup=get_edit_entry_inline_keyboard(entries_sorted)
         )
         await state.set_state(BotStates.selected_group)
         return
@@ -618,9 +676,11 @@ async def edit_entry_back(callback: types.CallbackQuery, state: FSMContext):
     group = data["selected_group"]
     config = load_config()
     entries = config.get("scheduled", {}).get(group, [])
+    # Сортируем записи по времени от меньшего к большему
+    entries_sorted = sorted(entries, key=lambda x: x.get("time", "00:00:00"))
     await callback.message.answer(
         "Выберите сообщение для редактирования:",
-        reply_markup=get_edit_entry_inline_keyboard(entries)
+        reply_markup=get_edit_entry_inline_keyboard(entries_sorted)
     )
     await callback.answer()
 
@@ -772,6 +832,7 @@ spam_menu = ReplyKeyboardMarkup(
 
 # --- Обработчик для /start ---
 @dp.message(CommandStart())
+@private_chat_only
 @owner_only
 async def cmd_start(message: Message, state: FSMContext):
     print(f"[FSM] Состояние: {await state.get_state()}, message: {message.text}")
@@ -784,6 +845,7 @@ async def cmd_start(message: Message, state: FSMContext):
 
 # --- Старт/стоп по расписанию ---
 @dp.message(F.text == "🟢 Старт")
+@private_chat_only
 @owner_only
 async def schedule_start(message: Message, state: FSMContext):
     global schedule_broadcast_active
@@ -795,6 +857,7 @@ async def schedule_start(message: Message, state: FSMContext):
     await message.answer("<b>🟢 Рассылка по расписанию запущена.</b>", parse_mode='html')
 
 @dp.message(F.text == "🔴 Стоп")
+@private_chat_only
 @owner_only
 async def schedule_stop(message: Message, state: FSMContext):
     global schedule_broadcast_active
@@ -807,6 +870,7 @@ async def schedule_stop(message: Message, state: FSMContext):
 
 # --- Назад для меню по задержке ---
 @dp.message(F.text == "🔙 Назад")
+@private_chat_only
 @owner_only
 async def spam_back_to_main_menu(message: Message, state: FSMContext):
     # Если пользователь был в меню по задержке, возвращаем в главное меню
@@ -822,6 +886,7 @@ async def spam_back_to_main_menu(message: Message, state: FSMContext):
 
 # --- При входе в меню по расписанию сохраняем last_menu ---
 @dp.message(F.text == "🗓️ По расписанию")
+@private_chat_only
 @owner_only
 async def btn_schedule(message: Message, state: FSMContext):
     config = load_config()
@@ -833,8 +898,8 @@ async def btn_schedule(message: Message, state: FSMContext):
         return
     await state.update_data(last_menu='schedule')
     await message.answer(
-        "Выберите группу для настройки расписания:",
-        reply_markup=get_group_keyboard("schedule")
+        "<b> Выберите группу для настройки расписания: </b>",
+        reply_markup=get_group_keyboard("schedule"), parse_mode="HTML"
     )
     await message.answer("<i>Для возврата нажмите на кнопку </i><b>Назад</b>",
         parse_mode="HTML", reply_markup=schedule_menu)
@@ -917,6 +982,7 @@ async def schedule_input_message(message: Message, state: FSMContext):
     await message.answer("<b> 🔽 Выберите действие: </b>", parse_mode="HTML", reply_markup=main_menu)
 
 @dp.message(F.text == "⏳ По задержке")
+@private_chat_only
 @owner_only
 async def btn_spam_menu(message: Message, state: FSMContext):
     config = load_config()
@@ -934,6 +1000,7 @@ async def btn_spam_menu(message: Message, state: FSMContext):
     )
 
 @dp.message(F.text == "🟢 Стаpт")
+@private_chat_only
 @owner_only
 async def btn_launch_spam(message: Message):
     config = load_config()
@@ -945,6 +1012,7 @@ async def btn_launch_spam(message: Message):
     await message.answer("<b>🟢 Рассылка по задержке запущена.</b>", parse_mode="HTML", reply_markup=spam_menu)
 
 @dp.message(F.text == "🔴 Cтоп")
+@private_chat_only
 @owner_only
 async def btn_stop_spam(message: Message):
     config = load_config()
@@ -956,6 +1024,7 @@ async def btn_stop_spam(message: Message):
     await message.answer("<b>🔴️ Рассылка по задержке остановлена.</b>", parse_mode="HTML", reply_markup=spam_menu)
 
 @dp.message(F.text == "🗑️ Удалить запись")
+@private_chat_only
 @owner_only
 async def delete_schedule_entry_start(message: Message, state: FSMContext):
     print(f"[FSM] Состояние: {await state.get_state()}, message: {message.text}")
@@ -981,10 +1050,12 @@ async def delete_schedule_group_selected(callback: types.CallbackQuery, state: F
         await callback.answer()
         return
     await state.update_data(selected_group=group)
+    # Сортируем записи по времени от меньшего к большему
+    entries_sorted = sorted(entries, key=lambda x: x.get("time", "00:00:00"))
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=f"{entry['time']} | {entry.get('message', '')[:20]}", callback_data=f"delete_schedule_entry:{i}")]
-            for i, entry in enumerate(entries)
+            for i, entry in enumerate(entries_sorted)
         ] + [[InlineKeyboardButton(text="🔙 Назад", callback_data="delete_schedule_back")]]
     )
     await callback.message.answer("<b> Выберите запись для удаления: </b>", reply_markup=keyboard, parse_mode="HTML")
@@ -1005,10 +1076,12 @@ async def delete_schedule_entry_selected(callback: types.CallbackQuery, state: F
         await callback.message.answer(f"<i>♦️ Удалена запись на {removed['time']}</i>", parse_mode="HTML")
     # После удаления — если остались записи, снова показываем выбор, иначе возвращаем к выбору группы
     if entries:
+        # Сортируем записи по времени от меньшего к большему
+        entries_sorted = sorted(entries, key=lambda x: x.get("time", "00:00:00"))
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text=f"{entry['time']} | {entry.get('message', '')[:20]}", callback_data=f"delete_schedule_entry:{i}")]
-                for i, entry in enumerate(entries)
+                for i, entry in enumerate(entries_sorted)
             ] + [[InlineKeyboardButton(text="🔙 Назад", callback_data="delete_schedule_back")]]
         )
         await callback.message.answer("<b> Выберите запись для удаления: </b>", reply_markup=keyboard, parse_mode="HTML")
