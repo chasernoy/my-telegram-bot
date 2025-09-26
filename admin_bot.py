@@ -485,9 +485,20 @@ async def btn_list_groups(message: Message):
     print(f"[LIST] Группы в chats: {list(config.get('chats', {}).keys())}")
     if not config["chats"]:
         return await message.answer("<i> 🔶 Список групп пуст. </i>", parse_mode="HTML",)
-    text = "\n".join([f"{chat}" for chat in config["chats"].keys()])
-    print(f"[LIST] Отправляем список: {text}")
-    await message.answer(f"<b> Список добавленных групп:\n{text} </b>", parse_mode="HTML",)
+    
+    # Проверяем статус бота в каждой группе
+    status_info = []
+    for chat in config["chats"].keys():
+        try:
+            chat_member = await bot.get_chat_member(chat_id=chat, user_id=bot.id)
+            status_emoji = "✅" if chat_member.status in ['administrator', 'creator'] else "⚠️"
+            status_info.append(f"{status_emoji} {chat} ({chat_member.status})")
+        except Exception as e:
+            status_info.append(f"❌ {chat} (ошибка: {str(e)[:30]}...)")
+    
+    text = "\n".join(status_info)
+    print(f"[LIST] Отправляем список с статусами: {text}")
+    await message.answer(f"<b> Список добавленных групп:\n{text}\n\n✅ - админ, ⚠️ - не админ, ❌ - ошибка</b>", parse_mode="HTML",)
 
 # --- Глобальный флаг для фоновой задачи ---
 schedule_broadcast_active = False
@@ -738,17 +749,43 @@ async def send_scheduled_message(group, entry):
     print(f"[DEBUG] send_scheduled_message для {group}, entry: {entry}")
     chat = group
     try:
+        # Проверяем права бота в группе
+        try:
+            chat_member = await bot.get_chat_member(chat_id=chat, user_id=bot.id)
+            if chat_member.status not in ['administrator', 'creator']:
+                print(f"[WARN] Бот не является администратором в {chat}, статус: {chat_member.status}")
+        except Exception as e:
+            print(f"[WARN] Не удалось проверить права бота в {chat}: {e}")
+        
         if entry.get("media"):
             print(f"[LOG] Отправка медиа в {chat}: {entry['media']}")
             if entry["media"].endswith(".jpg") or entry["media"].endswith(".png"):
                 input_file = FSInputFile(entry["media"])
-                await bot.send_photo(chat_id=chat, photo=input_file, caption=entry.get("message", ""), caption_entities=[types.MessageEntity.model_validate(e) for e in entry.get("caption_entities", [])] if entry.get("caption_entities") else None)
+                await bot.send_photo(
+                    chat_id=chat, 
+                    photo=input_file, 
+                    caption=entry.get("message", ""), 
+                    caption_entities=[types.MessageEntity.model_validate(e) for e in entry.get("caption_entities", [])] if entry.get("caption_entities") else None,
+                    disable_notification=True  # Отключаем уведомления
+                )
             else:
                 input_file = FSInputFile(entry["media"])
-                await bot.send_document(chat_id=chat, document=input_file, caption=entry.get("message", ""), caption_entities=[types.MessageEntity.model_validate(e) for e in entry.get("caption_entities", [])] if entry.get("caption_entities") else None)
+                await bot.send_document(
+                    chat_id=chat, 
+                    document=input_file, 
+                    caption=entry.get("message", ""), 
+                    caption_entities=[types.MessageEntity.model_validate(e) for e in entry.get("caption_entities", [])] if entry.get("caption_entities") else None,
+                    disable_notification=True  # Отключаем уведомления
+                )
         elif entry.get("message"):
             print(f"[LOG] Отправка текста в {chat}: {entry['message']}")
-            await bot.send_message(chat_id=chat, text=entry["message"], entities=[types.MessageEntity.model_validate(e) for e in entry.get("entities", [])] if entry.get("entities") else None, parse_mode=None)
+            await bot.send_message(
+                chat_id=chat, 
+                text=entry["message"], 
+                entities=[types.MessageEntity.model_validate(e) for e in entry.get("entities", [])] if entry.get("entities") else None, 
+                parse_mode=None,
+                disable_notification=True  # Отключаем уведомления
+            )
         else:
             print(f"[WARN] Нет данных для отправки в {chat}")
     except Exception as e:
@@ -765,17 +802,43 @@ async def delay_broadcast_loop():
         for group, data in config.get("chats", {}).items():
             print(f"[LOG] Попытка отправки в {group}, data: {data}")
             try:
+                # Проверяем права бота в группе
+                try:
+                    chat_member = await bot.get_chat_member(chat_id=group, user_id=bot.id)
+                    if chat_member.status not in ['administrator', 'creator']:
+                        print(f"[WARN] Бот не является администратором в {group}, статус: {chat_member.status}")
+                except Exception as e:
+                    print(f"[WARN] Не удалось проверить права бота в {group}: {e}")
+                
                 if data.get("media"):
                     print(f"[LOG] Отправка медиа в {group}: {data['media']}")
                     if data["media"].endswith(".jpg") or data["media"].endswith(".png"):
                         input_file = FSInputFile(data["media"])
-                        await bot.send_photo(chat_id=group, photo=input_file, caption=data.get("message", ""), caption_entities=[types.MessageEntity.model_validate(e) for e in data.get("caption_entities", [])] if data.get("caption_entities") else None)
+                        await bot.send_photo(
+                            chat_id=group, 
+                            photo=input_file, 
+                            caption=data.get("message", ""), 
+                            caption_entities=[types.MessageEntity.model_validate(e) for e in data.get("caption_entities", [])] if data.get("caption_entities") else None,
+                            disable_notification=True  # Отключаем уведомления
+                        )
                     else:
                         input_file = FSInputFile(data["media"])
-                        await bot.send_document(chat_id=group, document=input_file, caption=data.get("message", ""), caption_entities=[types.MessageEntity.model_validate(e) for e in data.get("caption_entities", [])] if data.get("caption_entities") else None)
+                        await bot.send_document(
+                            chat_id=group, 
+                            document=input_file, 
+                            caption=data.get("message", ""), 
+                            caption_entities=[types.MessageEntity.model_validate(e) for e in data.get("caption_entities", [])] if data.get("caption_entities") else None,
+                            disable_notification=True  # Отключаем уведомления
+                        )
                 elif data.get("message"):
                     print(f"[LOG] Отправка текста в {group}: {data['message']}")
-                    await bot.send_message(chat_id=group, text=data["message"], entities=[types.MessageEntity.model_validate(e) for e in data.get("entities", [])] if data.get("entities") else None, parse_mode=None)
+                    await bot.send_message(
+                        chat_id=group, 
+                        text=data["message"], 
+                        entities=[types.MessageEntity.model_validate(e) for e in data.get("entities", [])] if data.get("entities") else None, 
+                        parse_mode=None,
+                        disable_notification=True  # Отключаем уведомления
+                    )
                 else:
                     print(f"[WARN] Нет данных для отправки в {group}")
             except Exception as e:
@@ -804,7 +867,7 @@ main_menu = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="➕ Добавить группу")],
         [KeyboardButton(text="🗓️ По расписанию"), KeyboardButton(text="⏳ По задержке")],
-        [KeyboardButton(text="📒 Список групп")],
+        [KeyboardButton(text="📒 Список групп"), KeyboardButton(text="🔧 Проверить бота")],
         [KeyboardButton(text="❌ Удалить группу")],
     ],
     resize_keyboard=True
@@ -1114,6 +1177,64 @@ async def delete_schedule_back_to_group(callback: types.CallbackQuery, state: FS
     await callback.message.answer("<b> Выберите группу, из которой хотите удалить запись: </b>", reply_markup=keyboard, parse_mode="HTML")
     await state.set_state(DeleteScheduleStates.waiting_for_group)
     await callback.answer()
+
+@dp.message(F.text == "🔧 Проверить бота")
+@private_chat_only
+@owner_only
+async def check_bot_status(message: Message):
+    """Проверка статуса бота во всех группах"""
+    config = load_config()
+    if not config["chats"]:
+        await message.answer("<i>🔶 Список групп пуст.</i>", parse_mode="HTML")
+        return
+    
+    await message.answer("<i>🔍 Проверяю статус бота в группах...</i>", parse_mode="HTML")
+    
+    status_info = []
+    admin_groups = []
+    non_admin_groups = []
+    error_groups = []
+    
+    for chat in config["chats"].keys():
+        try:
+            chat_member = await bot.get_chat_member(chat_id=chat, user_id=bot.id)
+            if chat_member.status in ['administrator', 'creator']:
+                admin_groups.append(chat)
+                status_info.append(f"✅ {chat} - {chat_member.status}")
+            else:
+                non_admin_groups.append(chat)
+                status_info.append(f"⚠️ {chat} - {chat_member.status}")
+        except Exception as e:
+            error_groups.append(chat)
+            status_info.append(f"❌ {chat} - ошибка доступа")
+    
+    # Формируем отчет
+    report = "<b>📊 Отчет о статусе бота:</b>\n\n"
+    
+    if admin_groups:
+        report += f"<b>✅ Администратор ({len(admin_groups)}):</b>\n"
+        for group in admin_groups:
+            report += f"• {group}\n"
+        report += "\n"
+    
+    if non_admin_groups:
+        report += f"<b>⚠️ Не администратор ({len(non_admin_groups)}):</b>\n"
+        for group in non_admin_groups:
+            report += f"• {group}\n"
+        report += "\n"
+    
+    if error_groups:
+        report += f"<b>❌ Ошибки доступа ({len(error_groups)}):</b>\n"
+        for group in error_groups:
+            report += f"• {group}\n"
+        report += "\n"
+    
+    if non_admin_groups or error_groups:
+        report += "<i>💡 Для устранения кнопки 'ПЕРЕЙТИ В ГРУППУ' сделайте бота администратором в проблемных группах.</i>"
+    else:
+        report += "<i>🎉 Все группы настроены корректно!</i>"
+    
+    await message.answer(report, parse_mode="HTML")
 
 async def run_adminbot():
     await main()
