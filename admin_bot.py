@@ -485,20 +485,9 @@ async def btn_list_groups(message: Message):
     print(f"[LIST] Группы в chats: {list(config.get('chats', {}).keys())}")
     if not config["chats"]:
         return await message.answer("<i> 🔶 Список групп пуст. </i>", parse_mode="HTML",)
-    
-    # Проверяем статус бота в каждой группе
-    status_info = []
-    for chat in config["chats"].keys():
-        try:
-            chat_member = await bot.get_chat_member(chat_id=chat, user_id=bot.id)
-            status_emoji = "✅" if chat_member.status in ['administrator', 'creator'] else "⚠️"
-            status_info.append(f"{status_emoji} {chat} ({chat_member.status})")
-        except Exception as e:
-            status_info.append(f"❌ {chat} (ошибка: {str(e)[:30]}...)")
-    
-    text = "\n".join(status_info)
-    print(f"[LIST] Отправляем список с статусами: {text}")
-    await message.answer(f"<b> Список добавленных групп:\n{text}\n\n✅ - админ, ⚠️ - не админ, ❌ - ошибка</b>", parse_mode="HTML",)
+    text = "\n".join([f"{chat}" for chat in config["chats"].keys()])
+    print(f"[LIST] Отправляем список: {text}")
+    await message.answer(f"<b> Список добавленных групп:\n{text} </b>", parse_mode="HTML",)
 
 # --- Глобальный флаг для фоновой задачи ---
 schedule_broadcast_active = False
@@ -745,6 +734,7 @@ async def schedule_broadcast_loop():
                         print(f"[ERROR] Не удалось отправить сообщение по расписанию в {group}: {e}")
         await asyncio.sleep(5)
 
+
 async def send_scheduled_message(group, entry):
     print(f"[DEBUG] send_scheduled_message для {group}, entry: {entry}")
     chat = group
@@ -784,10 +774,12 @@ async def send_scheduled_message(group, entry):
                 text=entry["message"], 
                 entities=[types.MessageEntity.model_validate(e) for e in entry.get("entities", [])] if entry.get("entities") else None, 
                 parse_mode=None,
-                disable_notification=True  # Отключаем уведомления
+                disable_notification=True,  # Отключаем уведомления
+                disable_web_page_preview=True  # Отключаем превью ссылок
             )
         else:
             print(f"[WARN] Нет данных для отправки в {chat}")
+        
     except Exception as e:
         print(f"[ERROR] Не удалось отправить сообщение по расписанию в {chat}: {e}")
 
@@ -837,7 +829,8 @@ async def delay_broadcast_loop():
                         text=data["message"], 
                         entities=[types.MessageEntity.model_validate(e) for e in data.get("entities", [])] if data.get("entities") else None, 
                         parse_mode=None,
-                        disable_notification=True  # Отключаем уведомления
+                        disable_notification=True,  # Отключаем уведомления
+                        disable_web_page_preview=True  # Отключаем превью ссылок
                     )
                 else:
                     print(f"[WARN] Нет данных для отправки в {group}")
@@ -867,7 +860,7 @@ main_menu = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="➕ Добавить группу")],
         [KeyboardButton(text="🗓️ По расписанию"), KeyboardButton(text="⏳ По задержке")],
-        [KeyboardButton(text="📒 Список групп"), KeyboardButton(text="🔧 Проверить бота")],
+        [KeyboardButton(text="📒 Список групп")],
         [KeyboardButton(text="❌ Удалить группу")],
     ],
     resize_keyboard=True
@@ -1177,64 +1170,6 @@ async def delete_schedule_back_to_group(callback: types.CallbackQuery, state: FS
     await callback.message.answer("<b> Выберите группу, из которой хотите удалить запись: </b>", reply_markup=keyboard, parse_mode="HTML")
     await state.set_state(DeleteScheduleStates.waiting_for_group)
     await callback.answer()
-
-@dp.message(F.text == "🔧 Проверить бота")
-@private_chat_only
-@owner_only
-async def check_bot_status(message: Message):
-    """Проверка статуса бота во всех группах"""
-    config = load_config()
-    if not config["chats"]:
-        await message.answer("<i>🔶 Список групп пуст.</i>", parse_mode="HTML")
-        return
-    
-    await message.answer("<i>🔍 Проверяю статус бота в группах...</i>", parse_mode="HTML")
-    
-    status_info = []
-    admin_groups = []
-    non_admin_groups = []
-    error_groups = []
-    
-    for chat in config["chats"].keys():
-        try:
-            chat_member = await bot.get_chat_member(chat_id=chat, user_id=bot.id)
-            if chat_member.status in ['administrator', 'creator']:
-                admin_groups.append(chat)
-                status_info.append(f"✅ {chat} - {chat_member.status}")
-            else:
-                non_admin_groups.append(chat)
-                status_info.append(f"⚠️ {chat} - {chat_member.status}")
-        except Exception as e:
-            error_groups.append(chat)
-            status_info.append(f"❌ {chat} - ошибка доступа")
-    
-    # Формируем отчет
-    report = "<b>📊 Отчет о статусе бота:</b>\n\n"
-    
-    if admin_groups:
-        report += f"<b>✅ Администратор ({len(admin_groups)}):</b>\n"
-        for group in admin_groups:
-            report += f"• {group}\n"
-        report += "\n"
-    
-    if non_admin_groups:
-        report += f"<b>⚠️ Не администратор ({len(non_admin_groups)}):</b>\n"
-        for group in non_admin_groups:
-            report += f"• {group}\n"
-        report += "\n"
-    
-    if error_groups:
-        report += f"<b>❌ Ошибки доступа ({len(error_groups)}):</b>\n"
-        for group in error_groups:
-            report += f"• {group}\n"
-        report += "\n"
-    
-    if non_admin_groups or error_groups:
-        report += "<i>💡 Для устранения кнопки 'ПЕРЕЙТИ В ГРУППУ' сделайте бота администратором в проблемных группах.</i>"
-    else:
-        report += "<i>🎉 Все группы настроены корректно!</i>"
-    
-    await message.answer(report, parse_mode="HTML")
 
 async def run_adminbot():
     await main()
