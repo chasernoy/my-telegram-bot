@@ -317,6 +317,7 @@ async def handle_delay_media_group(message: Message, state: FSMContext):
         config["chats"][chat]["caption_entities"] = [e.model_dump() for e in message.caption_entities] if message.caption_entities else None
         config["chats"][chat]["entities"] = [e.model_dump() for e in message.entities] if message.entities else None
         config["chats"][chat].pop("media", None)  # Удаляем старый медиа
+        print(f"[DEBUG] Сохраняем медиа-группу задержки: {data['media_groups'][media_group_id]}")
         
         save_config(config)
         await message.answer(f"<i>🔸 Медиа-группа сохранена для {chat}</i>", parse_mode="HTML")
@@ -833,16 +834,21 @@ async def send_scheduled_message(group, entry):
         
         if entry.get("media_group"):
             print(f"[LOG] Отправка медиа-группы в {chat}: {len(entry['media_group'])} элементов")
+            print(f"[DEBUG] Содержимое медиа-группы: {entry['media_group']}")
             media_group = []
             for media_item in entry["media_group"]:
+                print(f"[DEBUG] Обработка элемента: {media_item}")
                 if media_item["type"] == "photo":
                     input_file = FSInputFile(media_item["file_path"])
                     media_group.append(types.InputMediaPhoto(media=input_file))
+                    print(f"[DEBUG] Добавлено фото: {media_item['file_path']}")
                 elif media_item["type"] == "video":
                     input_file = FSInputFile(media_item["file_path"])
                     media_group.append(types.InputMediaVideo(media=input_file))
+                    print(f"[DEBUG] Добавлено видео: {media_item['file_path']}")
                 elif media_item["type"] == "document":
                     media_group.append(types.InputMediaDocument(media=media_item["file_id"]))
+                    print(f"[DEBUG] Добавлен документ: {media_item['file_id']}")
             
             # Добавляем подпись к первому элементу
             if media_group and entry.get("message"):
@@ -918,16 +924,21 @@ async def delay_broadcast_loop():
                 
                 if data.get("media_group"):
                     print(f"[LOG] Отправка медиа-группы в {group}: {len(data['media_group'])} элементов")
+                    print(f"[DEBUG] Содержимое медиа-группы задержки: {data['media_group']}")
                     media_group = []
                     for media_item in data["media_group"]:
+                        print(f"[DEBUG] Обработка элемента задержки: {media_item}")
                         if media_item["type"] == "photo":
                             input_file = FSInputFile(media_item["file_path"])
                             media_group.append(types.InputMediaPhoto(media=input_file))
+                            print(f"[DEBUG] Добавлено фото задержки: {media_item['file_path']}")
                         elif media_item["type"] == "video":
                             input_file = FSInputFile(media_item["file_path"])
                             media_group.append(types.InputMediaVideo(media=input_file))
+                            print(f"[DEBUG] Добавлено видео задержки: {media_item['file_path']}")
                         elif media_item["type"] == "document":
                             media_group.append(types.InputMediaDocument(media=media_item["file_id"]))
+                            print(f"[DEBUG] Добавлен документ задержки: {media_item['file_id']}")
                     
                     # Добавляем подпись к первому элементу
                     if media_group and data.get("message"):
@@ -1136,6 +1147,7 @@ async def schedule_input_message(message: Message, state: FSMContext):
     
     # Если это медиа-группа, переключаемся на специальный обработчик
     if message.media_group_id:
+        print(f"[DEBUG] Обнаружена медиа-группа: {message.media_group_id}")
         await state.set_state(ScheduleStates.collecting_media_group)
         # Обрабатываем первое сообщение медиа-группы
         await handle_media_group(message, state)
@@ -1265,6 +1277,7 @@ async def handle_media_group(message: Message, state: FSMContext):
             "caption_entities": [e.model_dump() for e in message.caption_entities] if message.caption_entities else None,
             "entities": [e.model_dump() for e in message.entities] if message.entities else None
         }
+        print(f"[DEBUG] Сохраняем медиа-группу: {entry}")
         
         # Сохраняем в config
         if "scheduled" not in config:
