@@ -3,7 +3,7 @@ import asyncio
 import os
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandStart
-from aiogram.types import Message, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import Message, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, MediaGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.state import StatesGroup, State
@@ -73,10 +73,12 @@ class BotStates(StatesGroup):
     waiting_for_delay_unit = State()
     waiting_for_delay = State()
     selected_group = State()
+    collecting_delay_media_group = State()
 
 class ScheduleStates(StatesGroup):
     waiting_for_time = State()
     waiting_for_scheduled_message = State()
+    collecting_media_group = State()
 
 class EditScheduleStates(StatesGroup):
     waiting_for_new_time = State()
@@ -210,6 +212,14 @@ async def group_msg_selected(callback: types.CallbackQuery, state: FSMContext):
 @owner_only
 async def handle_msg_input(message: Message, state: FSMContext):
     print(f"[FSM] Состояние: {await state.get_state()}, message: {message.text}")
+    
+    # Если это медиа-группа, переключаемся на специальный обработчик
+    if message.media_group_id:
+        await state.set_state(BotStates.collecting_delay_media_group)
+        # Обрабатываем первое сообщение медиа-группы
+        await handle_delay_media_group(message, state)
+        return
+    
     data = await state.get_data()
     chat = data["selected_group"]
     config = load_config()
@@ -234,6 +244,16 @@ async def handle_msg_input(message: Message, state: FSMContext):
         config["chats"][chat]["message"] = message.caption or ""
         config["chats"][chat]["caption_entities"] = [e.model_dump() for e in message.caption_entities] if message.caption_entities else None
         await message.answer(f"<i> 🔸 Медиа + подпись сохранены для {chat} </i>",parse_mode="HTML",)
+    elif message.video:
+        video = message.video
+        file = await bot.get_file(video.file_id)
+        os.makedirs("media", exist_ok=True)
+        file_path = f"media/{video.file_unique_id}.mp4"
+        await bot.download_file(file.file_path, destination=file_path)
+        config["chats"][chat]["media"] = file_path
+        config["chats"][chat]["message"] = message.caption or ""
+        config["chats"][chat]["caption_entities"] = [e.model_dump() for e in message.caption_entities] if message.caption_entities else None
+        await message.answer(f"<i>🔸 Видео + подпись сохранены для {chat}</i>", parse_mode="HTML",)
     elif message.text:
         config["chats"][chat]["message"] = message.text
         config["chats"][chat]["entities"] = [e.model_dump() for e in message.entities] if message.entities else None
@@ -247,6 +267,61 @@ async def handle_msg_input(message: Message, state: FSMContext):
     save_config(config)
     await message.answer("<b> 🔽 Выберите действие: </b>", parse_mode="HTML", reply_markup=main_menu)
     await state.clear()
+
+# Обработчик для медиа-групп в режиме задержки
+@dp.message(BotStates.collecting_delay_media_group)
+@owner_only
+async def handle_delay_media_group(message: Message, state: FSMContext):
+    """Обработка медиа-групп для режима задержки"""
+    print(f"[FSM] Обработка медиа-группы задержки: {message.media_group_id}")
+    
+    data = await state.get_data()
+    chat = data["selected_group"]
+    config = load_config()
+    
+    # Собираем медиа-группу
+    media_group_id = message.media_group_id
+    if media_group_id not in data.get("media_groups", {}):
+        data["media_groups"] = {media_group_id: []}
+        await state.update_data(media_groups=data["media_groups"])
+    
+    # Добавляем текущее медиа в группу
+    media_item = {}
+    if message.photo:
+        photo = message.photo[-1]
+        file = await bot.get_file(photo.file_id)
+        file_path = f"media/{photo.file_unique_id}.jpg"
+        os.makedirs("media", exist_ok=True)
+        await bot.download_file(file.file_path, destination=file_path)
+        media_item = {"type": "photo", "file_path": file_path}
+    elif message.video:
+        video = message.video
+        file = await bot.get_file(video.file_id)
+        file_path = f"media/{video.file_unique_id}.mp4"
+        os.makedirs("media", exist_ok=True)
+        await bot.download_file(file.file_path, destination=file_path)
+        media_item = {"type": "video", "file_path": file_path}
+    elif message.document:
+        file_id = message.document.file_id
+        media_item = {"type": "document", "file_id": file_id}
+    
+    if media_item:
+        data["media_groups"][media_group_id].append(media_item)
+        await state.update_data(media_groups=data["media_groups"])
+    
+    # Если это последнее сообщение в группе (нет caption или это текстовое сообщение)
+    if message.caption or (message.text and not message.photo and not message.video and not message.document):
+        # Сохраняем медиа-группу
+        config["chats"][chat]["media_group"] = data["media_groups"][media_group_id]
+        config["chats"][chat]["message"] = message.caption or message.text or ""
+        config["chats"][chat]["caption_entities"] = [e.model_dump() for e in message.caption_entities] if message.caption_entities else None
+        config["chats"][chat]["entities"] = [e.model_dump() for e in message.entities] if message.entities else None
+        config["chats"][chat].pop("media", None)  # Удаляем старый медиа
+        
+        save_config(config)
+        await message.answer(f"<i>🔸 Медиа-группа сохранена для {chat}</i>", parse_mode="HTML")
+        await message.answer("<b> 🔽 Выберите действие: </b>", parse_mode="HTML", reply_markup=main_menu)
+        await state.clear()
 
 # -----------------------------------
 # Задержка Выбор единицы времени (секунды, минуты, часы)
@@ -654,6 +729,15 @@ async def save_new_message(message: Message, state: FSMContext):
         entry["media"] = file_id
         entry["message"] = message.caption or ""
         entry["caption_entities"] = [e.model_dump() for e in message.caption_entities] if message.caption_entities else None
+    elif message.video:
+        video = message.video
+        file = await bot.get_file(video.file_id)
+        file_path = f"media/{video.file_unique_id}.mp4"
+        os.makedirs("media", exist_ok=True)
+        await bot.download_file(file.file_path, destination=file_path)
+        entry["media"] = file_path
+        entry["message"] = message.caption or ""
+        entry["caption_entities"] = [e.model_dump() for e in message.caption_entities] if message.caption_entities else None
     elif message.text:
         entry["message"] = message.text
         entry["entities"] = [e.model_dump() for e in message.entities] if message.entities else None
@@ -747,25 +831,55 @@ async def send_scheduled_message(group, entry):
         except Exception as e:
             print(f"[WARN] Не удалось проверить права бота в {chat}: {e}")
         
-        if entry.get("media"):
+        if entry.get("media_group"):
+            print(f"[LOG] Отправка медиа-группы в {chat}: {len(entry['media_group'])} элементов")
+            media_group = []
+            for media_item in entry["media_group"]:
+                if media_item["type"] == "photo":
+                    input_file = FSInputFile(media_item["file_path"])
+                    media_group.append(types.InputMediaPhoto(media=input_file))
+                elif media_item["type"] == "video":
+                    input_file = FSInputFile(media_item["file_path"])
+                    media_group.append(types.InputMediaVideo(media=input_file))
+                elif media_item["type"] == "document":
+                    media_group.append(types.InputMediaDocument(media=media_item["file_id"]))
+            
+            # Добавляем подпись к первому элементу
+            if media_group and entry.get("message"):
+                media_group[0].caption = entry["message"]
+                if entry.get("caption_entities"):
+                    media_group[0].caption_entities = [types.MessageEntity.model_validate(e) for e in entry["caption_entities"]]
+            
+            await bot.send_media_group(chat_id=chat, media=media_group, disable_notification=True)
+        elif entry.get("media"):
             print(f"[LOG] Отправка медиа в {chat}: {entry['media']}")
-            if entry["media"].endswith(".jpg") or entry["media"].endswith(".png"):
-                input_file = FSInputFile(entry["media"])
+            media_path = entry["media"]
+            if media_path.endswith(".jpg") or media_path.endswith(".png"):
+                input_file = FSInputFile(media_path)
                 await bot.send_photo(
                     chat_id=chat, 
                     photo=input_file, 
                     caption=entry.get("message", ""), 
                     caption_entities=[types.MessageEntity.model_validate(e) for e in entry.get("caption_entities", [])] if entry.get("caption_entities") else None,
-                    disable_notification=True  # Отключаем уведомления
+                    disable_notification=True
+                )
+            elif media_path.endswith(".mp4") or media_path.endswith(".mov") or media_path.endswith(".m4v"):
+                input_file = FSInputFile(media_path)
+                await bot.send_video(
+                    chat_id=chat,
+                    video=input_file,
+                    caption=entry.get("message", ""),
+                    caption_entities=[types.MessageEntity.model_validate(e) for e in entry.get("caption_entities", [])] if entry.get("caption_entities") else None,
+                    disable_notification=True
                 )
             else:
-                input_file = FSInputFile(entry["media"])
+                input_file = FSInputFile(media_path)
                 await bot.send_document(
                     chat_id=chat, 
                     document=input_file, 
                     caption=entry.get("message", ""), 
                     caption_entities=[types.MessageEntity.model_validate(e) for e in entry.get("caption_entities", [])] if entry.get("caption_entities") else None,
-                    disable_notification=True  # Отключаем уведомления
+                    disable_notification=True
                 )
         elif entry.get("message"):
             print(f"[LOG] Отправка текста в {chat}: {entry['message']}")
@@ -802,25 +916,55 @@ async def delay_broadcast_loop():
                 except Exception as e:
                     print(f"[WARN] Не удалось проверить права бота в {group}: {e}")
                 
-                if data.get("media"):
+                if data.get("media_group"):
+                    print(f"[LOG] Отправка медиа-группы в {group}: {len(data['media_group'])} элементов")
+                    media_group = []
+                    for media_item in data["media_group"]:
+                        if media_item["type"] == "photo":
+                            input_file = FSInputFile(media_item["file_path"])
+                            media_group.append(types.InputMediaPhoto(media=input_file))
+                        elif media_item["type"] == "video":
+                            input_file = FSInputFile(media_item["file_path"])
+                            media_group.append(types.InputMediaVideo(media=input_file))
+                        elif media_item["type"] == "document":
+                            media_group.append(types.InputMediaDocument(media=media_item["file_id"]))
+                    
+                    # Добавляем подпись к первому элементу
+                    if media_group and data.get("message"):
+                        media_group[0].caption = data["message"]
+                        if data.get("caption_entities"):
+                            media_group[0].caption_entities = [types.MessageEntity.model_validate(e) for e in data["caption_entities"]]
+                    
+                    await bot.send_media_group(chat_id=group, media=media_group, disable_notification=True)
+                elif data.get("media"):
                     print(f"[LOG] Отправка медиа в {group}: {data['media']}")
-                    if data["media"].endswith(".jpg") or data["media"].endswith(".png"):
-                        input_file = FSInputFile(data["media"])
+                    media_path = data["media"]
+                    if media_path.endswith(".jpg") or media_path.endswith(".png"):
+                        input_file = FSInputFile(media_path)
                         await bot.send_photo(
                             chat_id=group, 
                             photo=input_file, 
                             caption=data.get("message", ""), 
                             caption_entities=[types.MessageEntity.model_validate(e) for e in data.get("caption_entities", [])] if data.get("caption_entities") else None,
-                            disable_notification=True  # Отключаем уведомления
+                            disable_notification=True
+                        )
+                    elif media_path.endswith(".mp4") or media_path.endswith(".mov") or media_path.endswith(".m4v"):
+                        input_file = FSInputFile(media_path)
+                        await bot.send_video(
+                            chat_id=group,
+                            video=input_file,
+                            caption=data.get("message", ""),
+                            caption_entities=[types.MessageEntity.model_validate(e) for e in data.get("caption_entities", [])] if data.get("caption_entities") else None,
+                            disable_notification=True
                         )
                     else:
-                        input_file = FSInputFile(data["media"])
+                        input_file = FSInputFile(media_path)
                         await bot.send_document(
                             chat_id=group, 
                             document=input_file, 
                             caption=data.get("message", ""), 
                             caption_entities=[types.MessageEntity.model_validate(e) for e in data.get("caption_entities", [])] if data.get("caption_entities") else None,
-                            disable_notification=True  # Отключаем уведомления
+                            disable_notification=True
                         )
                 elif data.get("message"):
                     print(f"[LOG] Отправка текста в {group}: {data['message']}")
@@ -986,9 +1130,17 @@ async def schedule_input_time(message: Message, state: FSMContext):
 @owner_only
 async def schedule_input_message(message: Message, state: FSMContext):
     print(f"[FSM] Состояние: {await state.get_state()}, message: {message.text}")
-    if not (message.text or message.photo or message.document):
+    if not (message.text or message.photo or message.document or message.video):
         await message.answer("<i> ♦️ Не удалось распознать сообщение. Отправьте текст или медиа. </i> ", parse_mode="HTML",)
         return
+    
+    # Если это медиа-группа, переключаемся на специальный обработчик
+    if message.media_group_id:
+        await state.set_state(ScheduleStates.collecting_media_group)
+        # Обрабатываем первое сообщение медиа-группы
+        await handle_media_group(message, state)
+        return
+    
     data = await state.get_data()
     chat = data["selected_group"]
     scheduled_time = data["scheduled_time"]
@@ -1023,6 +1175,15 @@ async def schedule_input_message(message: Message, state: FSMContext):
         entry["media"] = file_id
         entry["message"] = message.caption or ""
         entry["caption_entities"] = [e.model_dump() for e in message.caption_entities] if message.caption_entities else None
+    elif message.video:
+        video = message.video
+        file = await bot.get_file(video.file_id)
+        file_path = f"media/{video.file_unique_id}.mp4"
+        os.makedirs("media", exist_ok=True)
+        await bot.download_file(file.file_path, destination=file_path)
+        entry["media"] = file_path
+        entry["message"] = message.caption or ""
+        entry["caption_entities"] = [e.model_dump() for e in message.caption_entities] if message.caption_entities else None
     elif message.text:
         entry["message"] = message.text
         entry["entities"] = [e.model_dump() for e in message.entities] if message.entities else None
@@ -1036,6 +1197,86 @@ async def schedule_input_message(message: Message, state: FSMContext):
     await message.answer(f"<i>🔸 Сообщение по расписанию для {chat} добавлено на {scheduled_time} </i>", parse_mode="HTML")
     await state.clear()
     await message.answer("<b> 🔽 Выберите действие: </b>", parse_mode="HTML", reply_markup=main_menu)
+
+# Обработчик для медиа-групп (несколько фото/видео в одном сообщении)
+@dp.message(ScheduleStates.collecting_media_group)
+@owner_only
+async def handle_media_group(message: Message, state: FSMContext):
+    """Обработка медиа-групп для расписания"""
+    print(f"[FSM] Обработка медиа-группы: {message.media_group_id}")
+    
+    data = await state.get_data()
+    chat = data["selected_group"]
+    scheduled_time = data["scheduled_time"]
+    config = load_config()
+    
+    # Проверяем, есть ли уже запись с таким временем
+    if "scheduled" in config and chat in config["scheduled"]:
+        for entry in config["scheduled"][chat]:
+            if entry["time"] == scheduled_time:
+                await message.answer(
+                    f"<i> ♦️ На {scheduled_time} уже запланировано сообщение для этой группы. Выберите другое время. </i>",
+                    parse_mode="HTML"
+                )
+                await message.answer(
+                    "<b>Введите время отправки сообщения в формате ЧЧ:ММ:СС (например, 15:30:25):</b>",
+                    parse_mode="HTML"
+                )
+                await state.set_state(ScheduleStates.waiting_for_time)
+                return
+    
+    # Собираем медиа-группу
+    media_group_id = message.media_group_id
+    if media_group_id not in data.get("media_groups", {}):
+        data["media_groups"] = {media_group_id: []}
+        await state.update_data(media_groups=data["media_groups"])
+    
+    # Добавляем текущее медиа в группу
+    media_item = {}
+    if message.photo:
+        photo = message.photo[-1]
+        file = await bot.get_file(photo.file_id)
+        file_path = f"media/{photo.file_unique_id}.jpg"
+        os.makedirs("media", exist_ok=True)
+        await bot.download_file(file.file_path, destination=file_path)
+        media_item = {"type": "photo", "file_path": file_path}
+    elif message.video:
+        video = message.video
+        file = await bot.get_file(video.file_id)
+        file_path = f"media/{video.file_unique_id}.mp4"
+        os.makedirs("media", exist_ok=True)
+        await bot.download_file(file.file_path, destination=file_path)
+        media_item = {"type": "video", "file_path": file_path}
+    elif message.document:
+        file_id = message.document.file_id
+        media_item = {"type": "document", "file_id": file_id}
+    
+    if media_item:
+        data["media_groups"][media_group_id].append(media_item)
+        await state.update_data(media_groups=data["media_groups"])
+    
+    # Если это последнее сообщение в группе (нет caption или это текстовое сообщение)
+    if message.caption or (message.text and not message.photo and not message.video and not message.document):
+        # Сохраняем медиа-группу
+        entry = {
+            "time": scheduled_time,
+            "media_group": data["media_groups"][media_group_id],
+            "message": message.caption or message.text or "",
+            "caption_entities": [e.model_dump() for e in message.caption_entities] if message.caption_entities else None,
+            "entities": [e.model_dump() for e in message.entities] if message.entities else None
+        }
+        
+        # Сохраняем в config
+        if "scheduled" not in config:
+            config["scheduled"] = {}
+        if chat not in config["scheduled"]:
+            config["scheduled"][chat] = []
+        config["scheduled"][chat].append(entry)
+        save_config(config)
+        
+        await message.answer(f"<i>🔸 Медиа-группа по расписанию для {chat} добавлена на {scheduled_time} </i>", parse_mode="HTML")
+        await state.clear()
+        await message.answer("<b> 🔽 Выберите действие: </b>", parse_mode="HTML", reply_markup=main_menu)
 
 @dp.message(F.text == "⏳ По задержке")
 @private_chat_only
