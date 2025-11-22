@@ -1,6 +1,7 @@
 import json
 import asyncio
 import os
+import builtins
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandStart
 from aiogram.types import Message, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
@@ -15,8 +16,20 @@ from aiogram.types import FSInputFile
 load_dotenv()
 TOKEN = os.getenv('BOT_TOKEN')
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'config.json')
+BACKUP_DIR = os.path.join(os.path.dirname(__file__), 'backups')
+
+# Логирование полностью отключено, чтобы не забивать дисковое пространство
+DEBUG_LOGS = False
 # --- Ограничение доступа по user_id ---
 OWNER_ID = int(os.getenv('OWNER_ID'))
+
+
+def _noop_print(*args, **kwargs):
+    if DEBUG_LOGS:
+        builtins.print(*args, **kwargs)
+
+
+print = _noop_print
 
 from functools import wraps
 
@@ -94,21 +107,168 @@ class DeleteScheduleStates(StatesGroup):
 
 def load_config():
     try:
-        with open(CONFIG_PATH, 'r') as f:
-            data = json.load(f)
-            print(f"[LOG] Загружен config: {data}")
+        if not os.path.exists(CONFIG_PATH):
+            print(f"[LOG] Файл config.json не существует, создаем новый")
+            default_config = {"chats": {}, "active": False, "scheduled": {}, "schedule_active": False}
+            save_config(default_config)
+            return default_config
+        
+        with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+            content = f.read()
+            if not content.strip():
+                print(f"[WARN] Файл config.json пустой!")
+                return {"chats": {}, "active": False, "scheduled": {}, "schedule_active": False}
+            
+            data = json.loads(content)
+            print(f"[LOG] Загружен config: {len(data.get('chats', {}))} групп, {len(data.get('scheduled', {}))} расписаний")
             return data
+    except json.JSONDecodeError as e:
+        print(f"[ERROR] Ошибка парсинга JSON в config.json: {e}")
+        print(f"[ERROR] Пытаемся восстановить из резервной копии...")
+        # Пытаемся восстановить из последнего бэкапа
+        if os.path.exists(BACKUP_DIR):
+            backups = sorted([f for f in os.listdir(BACKUP_DIR) if f.startswith("config_backup_")], reverse=True)
+            if backups:
+                backup_path = os.path.join(BACKUP_DIR, backups[0])
+                print(f"[RECOVER] Восстанавливаем из {backup_path}")
+                try:
+                    with open(backup_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    # Восстанавливаем файл
+                    with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+                        json.dump(data, f, indent=2, ensure_ascii=False)
+                    print(f"[RECOVER] Конфиг восстановлен из бэкапа")
+                    return data
+                except Exception as restore_error:
+                    print(f"[ERROR] Не удалось восстановить из бэкапа: {restore_error}")
+        
+        # Если восстановление не удалось, возвращаем пустой конфиг
+        return {"chats": {}, "active": False, "scheduled": {}, "schedule_active": False}
     except Exception as e:
         print(f"[ERROR] Не удалось загрузить config: {e}")
+        import traceback
+        traceback.print_exc()
         return {"chats": {}, "active": False, "scheduled": {}, "schedule_active": False}
 
-def save_config(data):
+def create_backup():
+    """Создает резервную копию config.json"""
     try:
-        with open(CONFIG_PATH, 'w') as f:
-            json.dump(data, f, indent=2)
-            print(f"[LOG] Сохранён config: {data}")
+        if not os.path.exists(BACKUP_DIR):
+            os.makedirs(BACKUP_DIR, exist_ok=True)
+        
+        if os.path.exists(CONFIG_PATH):
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_path = os.path.join(BACKUP_DIR, f"config_backup_{timestamp}.json")
+            with open(CONFIG_PATH, 'r') as src:
+                with open(backup_path, 'w') as dst:
+                    dst.write(src.read())
+            print(f"[BACKUP] Создана резервная копия: {backup_path}")
+            
+            # Удаляем старые бэкапы (оставляем последние 10)
+            backups = sorted([f for f in os.listdir(BACKUP_DIR) if f.startswith("config_backup_")])
+            if len(backups) > 10:
+                for old_backup in backups[:-10]:
+                    os.remove(os.path.join(BACKUP_DIR, old_backup))
+                    print(f"[BACKUP] Удален старый бэкап: {old_backup}")
+    except Exception as e:
+        print(f"[ERROR] Не удалось создать резервную копию: {e}")
+
+def check_disk_space():
+    """Проверяет свободное место на диске"""
+    try:
+        stat = os.statvfs(os.path.dirname(CONFIG_PATH))
+        free_bytes = stat.f_bavail * stat.f_frsize
+        free_mb = free_bytes / (1024 * 1024)
+        print(f"[DISK] Свободно места: {free_mb:.2f} MB")
+        if free_mb < 1:
+            print(f"[WARN] Критически мало места на диске: {free_mb:.2f} MB")
+            return False
+        return True
+    except Exception as e:
+        print(f"[WARN] Не удалось проверить место на диске: {e}")
+        return True  # Продолжаем, если не можем проверить
+
+def save_config(data):
+    """Сохраняет конфиг с атомарной записью через временный файл"""
+    temp_path = None
+    try:
+        # Проверяем свободное место на диске
+        if not check_disk_space():
+            print(f"[ERROR] Недостаточно места на диске для сохранения конфига!")
+            raise OSError(28, "No space left on device")
+        
+        # Создаем резервную копию перед сохранением (только если есть место)
+        try:
+            create_backup()
+        except OSError as e:
+            if e.errno == 28:  # No space left on device
+                print(f"[WARN] Не удалось создать бэкап из-за нехватки места, продолжаем без бэкапа")
+            else:
+                raise
+        
+        # Используем временный файл для атомарной записи
+        temp_path = CONFIG_PATH + ".tmp"
+        
+        # Записываем во временный файл
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())  # Принудительно записываем на диск
+        
+        # Проверяем, что временный файл не пустой
+        if os.path.getsize(temp_path) == 0:
+            raise OSError(28, "No space left on device - файл остался пустым")
+        
+        # Атомарно заменяем старый файл новым
+        if os.path.exists(CONFIG_PATH):
+            os.replace(temp_path, CONFIG_PATH)
+        else:
+            os.rename(temp_path, CONFIG_PATH)
+        
+        # Проверяем, что файл действительно сохранился и не пустой
+        if os.path.getsize(CONFIG_PATH) == 0:
+            raise OSError(28, "No space left on device - config.json остался пустым")
+        
+        # Проверяем, что файл действительно сохранился
+        verify_data = load_config()
+        if len(verify_data.get('chats', {})) != len(data.get('chats', {})):
+            print(f"[ERROR] Несоответствие данных после сохранения! Ожидалось {len(data.get('chats', {}))} групп, получили {len(verify_data.get('chats', {}))}")
+        
+        print(f"[LOG] Сохранён config: {len(data.get('chats', {}))} групп, {len(data.get('scheduled', {}))} расписаний")
+    except OSError as e:
+        if e.errno == 28:  # No space left on device
+            print(f"[CRITICAL] НЕТ МЕСТА НА ДИСКЕ! Не удалось сохранить конфиг.")
+            print(f"[CRITICAL] Освободите место на диске и попробуйте снова.")
+            # Удаляем временный файл при ошибке
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
+            # НЕ перезаписываем существующий файл, если он есть
+            raise
+        else:
+            print(f"[ERROR] Не удалось сохранить config: {e}")
+            import traceback
+            traceback.print_exc()
+            # Удаляем временный файл при ошибке
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
+            raise
     except Exception as e:
         print(f"[ERROR] Не удалось сохранить config: {e}")
+        import traceback
+        traceback.print_exc()
+        # Удаляем временный файл при ошибке
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except:
+                pass
+        raise
 
 # -----------------------------------
 # Кнопки для групп
@@ -167,19 +327,46 @@ async def btn_add(message: Message):
 async def handle_group_add(message: Message):
     """Добавление группы в личном чате: просто отправьте @groupname или https://t.me/groupname"""
     config = load_config()
+    print(f"[ADD_GROUP] Текущий конфиг до добавления: {config}")
     link = message.text.strip()
     # Приводим к формату @groupname
     if link.startswith("https://t.me/"):
         link = "@" + link.split("https://t.me/")[-1]
     if link.startswith("@"):  # убираем лишние символы после username
         link = link.split()[0].split("/")[0]
+    print(f"[ADD_GROUP] Обработанная ссылка: {link}")
     # Проверяем наличие группы только по @groupname
     groupnames = [k if k.startswith("@") else "@" + k.split("https://t.me/")[-1].split()[0].split("/")[0] for k in config["chats"].keys()]
     if link in groupnames:
         await message.answer("<i> 🔺 Данная группа уже добавлена </i>" , parse_mode="HTML",)
         return
     config["chats"][link] = {"message": None, "delay": 60}
-    save_config(config)
+    print(f"[ADD_GROUP] Конфиг после добавления группы: {config}")
+    
+    try:
+        save_config(config)
+    except OSError as e:
+        if e.errno == 28:  # No space left on device
+            print(f"[ERROR] Не удалось сохранить группу из-за нехватки места на диске")
+            await message.answer(
+                "<b>❌ КРИТИЧЕСКАЯ ОШИБКА!</b>\n\n"
+                "<i>На сервере закончилось место на диске!\n"
+                "Группа не была сохранена.\n\n"
+                "Освободите место на диске и попробуйте снова.</i>",
+                parse_mode="HTML"
+            )
+            return
+        else:
+            raise
+    
+    # Проверяем, что группа действительно сохранилась
+    verify_config = load_config()
+    print(f"[ADD_GROUP] Проверка после сохранения: {verify_config}")
+    if link not in verify_config.get("chats", {}):
+        print(f"[ERROR] Группа {link} не сохранилась! Конфиг: {verify_config}")
+        await message.answer(f"<i> ⚠️ Ошибка при сохранении группы. Попробуйте еще раз.</i>", parse_mode="HTML",)
+        return
+    
     await message.answer(f"<i> 🔸 Группа добавлена: </i> {link}", parse_mode="HTML",)
 
 # -----------------------------------
@@ -516,6 +703,18 @@ async def handle_remove(callback: types.CallbackQuery):
         if media_path and os.path.isfile(media_path):
             removed_media.append(media_path)
             print(f"[DELETE] Добавлен медиа-файл для удаления: {media_path}")
+        
+        # Удаляем медиа-группу из chats
+        media_group = config["chats"][chat].get("media_group")
+        if media_group:
+            print(f"[DELETE] Найдена медиа-группа в chats: {len(media_group)} элементов")
+            for media_item in media_group:
+                if media_item.get("type") in ["photo", "video"]:
+                    file_path = media_item.get("file_path")
+                    if file_path and os.path.isfile(file_path):
+                        removed_media.append(file_path)
+                        print(f"[DELETE] Добавлен файл из медиа-группы для удаления: {file_path}")
+        
         del config["chats"][chat]
     else:
         print(f"[DELETE] Группа {chat} не найдена в chats")
@@ -528,6 +727,17 @@ async def handle_remove(callback: types.CallbackQuery):
             if media_path and os.path.isfile(media_path):
                 removed_media.append(media_path)
                 print(f"[DELETE] Добавлен медиа-файл из scheduled для удаления: {media_path}")
+            
+            # Удаляем медиа-группу из scheduled
+            media_group = entry.get("media_group")
+            if media_group:
+                print(f"[DELETE] Найдена медиа-группа в scheduled: {len(media_group)} элементов")
+                for media_item in media_group:
+                    if media_item.get("type") in ["photo", "video"]:
+                        file_path = media_item.get("file_path")
+                        if file_path and os.path.isfile(file_path):
+                            removed_media.append(file_path)
+                            print(f"[DELETE] Добавлен файл из медиа-группы scheduled для удаления: {file_path}")
         del config["scheduled"][chat]
     else:
         print(f"[DELETE] Группа {chat} не найдена в scheduled")
@@ -1360,12 +1570,18 @@ async def delete_schedule_group_selected(callback: types.CallbackQuery, state: F
         await callback.answer()
         return
     await state.update_data(selected_group=group)
-    # Сортируем записи по времени от меньшего к большему
-    entries_sorted = sorted(entries, key=lambda x: x.get("time", "00:00:00"))
+    # Сортируем записи по времени, сохраняя исходные индексы
+    entries_sorted = sorted(
+        list(enumerate(entries)),
+        key=lambda item: item[1].get("time", "00:00:00")
+    )
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"{entry['time']} | {entry.get('message', '')[:20]}", callback_data=f"delete_schedule_entry:{i}")]
-            for i, entry in enumerate(entries_sorted)
+            [InlineKeyboardButton(
+                text=f"{entry['time']} | {entry.get('message', '')[:20]}",
+                callback_data=f"delete_schedule_entry:{idx}"
+            )]
+            for idx, entry in entries_sorted
         ] + [[InlineKeyboardButton(text="🔙 Назад", callback_data="delete_schedule_back")]]
     )
     await callback.message.answer("<b> Выберите запись для удаления: </b>", reply_markup=keyboard, parse_mode="HTML")
@@ -1382,16 +1598,49 @@ async def delete_schedule_entry_selected(callback: types.CallbackQuery, state: F
     entries = config.get("scheduled", {}).get(group, [])
     if 0 <= idx < len(entries):
         removed = entries.pop(idx)
+        
+        # Удаляем медиа-файлы удаленной записи
+        removed_media = []
+        
+        # Удаляем одиночный медиа-файл
+        media_path = removed.get("media")
+        if media_path and os.path.isfile(media_path):
+            removed_media.append(media_path)
+            print(f"[DELETE] Добавлен медиа-файл для удаления: {media_path}")
+        
+        # Удаляем медиа-группу
+        media_group = removed.get("media_group")
+        if media_group:
+            print(f"[DELETE] Найдена медиа-группа в удаляемой записи: {len(media_group)} элементов")
+            for media_item in media_group:
+                if media_item.get("type") in ["photo", "video"]:
+                    file_path = media_item.get("file_path")
+                    if file_path and os.path.isfile(file_path):
+                        removed_media.append(file_path)
+                        print(f"[DELETE] Добавлен файл из медиа-группы для удаления: {file_path}")
+        
+        # Удаляем все найденные медиа-файлы
+        for path in removed_media:
+            with suppress(Exception):
+                os.remove(path)
+                print(f"[DELETE] Удален медиа-файл: {path}")
+        
         save_config(config)
         await callback.message.answer(f"<i>♦️ Удалена запись на {removed['time']}</i>", parse_mode="HTML")
     # После удаления — если остались записи, снова показываем выбор, иначе возвращаем к выбору группы
     if entries:
-        # Сортируем записи по времени от меньшего к большему
-        entries_sorted = sorted(entries, key=lambda x: x.get("time", "00:00:00"))
+        # Сортируем записи по времени от меньшего к большему, сохраняя индексы
+        entries_sorted = sorted(
+            list(enumerate(entries)),
+            key=lambda item: item[1].get("time", "00:00:00")
+        )
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text=f"{entry['time']} | {entry.get('message', '')[:20]}", callback_data=f"delete_schedule_entry:{i}")]
-                for i, entry in enumerate(entries_sorted)
+                [InlineKeyboardButton(
+                    text=f"{entry['time']} | {entry.get('message', '')[:20]}",
+                    callback_data=f"delete_schedule_entry:{idx}"
+                )]
+                for idx, entry in entries_sorted
             ] + [[InlineKeyboardButton(text="🔙 Назад", callback_data="delete_schedule_back")]]
         )
         await callback.message.answer("<b> Выберите запись для удаления: </b>", reply_markup=keyboard, parse_mode="HTML")
